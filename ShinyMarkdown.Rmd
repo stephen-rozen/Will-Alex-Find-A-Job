@@ -2,7 +2,7 @@
 title: "Will Alex Find a Good Job?"
 subtitle: "Data Visualization and Bayesian Analysis"
 author: "Stephen Rozen"
-date: "2025-04-18"
+date: "2025-05-04"
 output: html_document
 runtime: shiny
 resource_files:
