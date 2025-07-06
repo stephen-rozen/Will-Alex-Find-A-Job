@@ -21,4 +21,4 @@ Bayesian Income Prediction
 
 Animation
 
-[View the app code](ShinyMarkdown.RMD)
+[View the shiny code](ShinyMarkdown.Rmd)
