@@ -1,0 +1,708 @@
+---
+title: "Will Alex Find a Good Job?"
+subtitle: "Data Visualization and Bayesian Analysis"
+author: "Stephen Rozen"
+date: "2025-04-18"
+output: html_document
+runtime: shiny
+resource_files:
+- alex_subsets.csv
+- by_DEGFIELDD_labelled.csv
+- "cbsa-est2023-alldata.csv"
+- job_postings_by_sector_US.csv
+- Labelled DEGFIELD.csv
+- metro_job_postings_us.csv
+- results.csv
+- Underemployment_rates.csv
+- Unemployment_rates.csv
+- shiny_degree/app.R
+- shiny_degree/by_DEGFIELDD_labelled.csv
+- by_DEGFIELDD_labelled.csv
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = FALSE)
+library(colorblindr)
+library(shiny)
+library(rmarkdown)
+library(plotly)
+library(DescTools)
+library(tidyverse)
+library(data.table)
+library(plotly)
+library(broom)
+```
+
+```{r}
+by_sector <- read.csv("job_postings_by_sector_US.csv")
+
+by_metro <- read.csv("metro_job_postings_us.csv")
+
+cbsa <- read.csv("cbsa-est2023-alldata.csv") %>%
+  filter(LSAD == "Metropolitan Statistical Area" | LSAD == "Micropolitan Statistical Area") %>%
+  select(POPESTIMATE2023, CBSA, NAME)
+  
+```
+
+My friend Alex is a third year math major, and goddammit, he can't find a good job for the summer.
+
+This is strange because, in addition to being very charming and good-looking, Alex is one of the smartest people I know.
+
+In discussing his joblessness, Alex put forward the idea that the job market *is just really hard right now* for college kids and recent college graduates. I was skeptical. Everybody thinks that they have it harder than the next guy and "tough job market" is a classic cop-out. On the other hand, I knew a lot of people having trouble finding jobs, and when we asked Google if the market is hard for college kids, the top result reported that \~40% of recent college grads are **under**employed.
+
+This exploration of employment will try to get to the bottom of this argument, and also answer some other questions about longer term prospects for college graduates. Are college degrees worthless? How do Alex's demographic and educational characteristics affect his chances of finding gainful employment? Should he start applying to work at CINNABON?
+
+## The current conditions -- not too hot
+
+The first place I looked for answers was Indeed's job postings in fields where Alex is applying. A recent decline in the number of postings would be a clear indicator that the market is unfavorable to job-seekers. And... It's pretty stark.
+
+#### The number of job listings in quantitative fields has been steadily declining since 2022
+
+```{r}
+
+
+
+sector_plot <- by_sector %>%
+  filter(display_name %in% c("Mathematics", "Scientific Research & Development", "Information Design & Documentation", "Banking & Finance")) %>%
+  mutate(date = as.Date(date)) %>%
+  ggplot(aes(x = date, y = indeed_job_postings_index, color = display_name)) + 
+  geom_line() +
+  geom_point(aes(text = paste("Date:", format(date, "%Y-%m-%d"), 
+                          "<br>Job Index:", indeed_job_postings_index,
+                          "<br>Sector:", display_name)),
+             size = 0.1, alpha = 0) + ##error in ggplot aes for some reason
+  theme_minimal() + 
+  scale_color_OkabeIto() + 
+  labs(y = "Job Index",
+       x = "Date",
+       color = "Sector"
+       )+
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank())
+
+ggplotly(sector_plot, tooltip = "text") %>%
+  layout(
+    legend = list(
+      orientation = "h",  
+      x = 0.5,            
+      xanchor = "center",
+      y = 1.1 
+    )
+  )
+
+
+```
+
+Yikes. But these are aggregate numbers, maybe there are regional differences that paint a less drastic picture. Alex is a UVA student from NYC, so the two markets where he is primarily conducting his search are New York and Washington DC.
+
+#### Job Listings in New York and DC Are Well Below Pre-Pandemic Levels
+
+```{r}
+metro_plot_data <- by_metro %>%
+  rename(CBSA = cbsa_code) %>%
+  mutate(date = as.Date(date)) %>%
+  filter(date >= as.Date("2025-04-01")) %>%
+  group_by(CBSA) %>%
+  summarize(index = mean(indeed_job_postings_index)) %>%
+  right_join(cbsa) %>%
+  arrange(desc(POPESTIMATE2023))
+
+
+
+        
+```
+
+```{r}
+
+cleaned_names <- c(
+  "New York, NY",
+  "Los Angeles, CA",
+  "Chicago, IL",
+  "Dallas, TX",
+  "Houston, TX",
+  "Atlanta, GA",
+  "Washington, DC",
+  "Philadelphia, PA",
+  "Miami, FL",
+  "Phoenix, AZ"
+)
+
+
+
+metro_plot <- metro_plot_data %>%
+  mutate(rel_index = index - 100) %>%
+  slice(1:10) %>%
+  mutate(plt_names = cleaned_names,
+         fill_col = ifelse(plt_names %in% c("New York, NY", "Washington, DC"), 
+                        "red",
+                        "blue")
+         )%>%
+  ggplot(aes(x = fct_reorder(cleaned_names, rel_index, .desc = TRUE), 
+             y = rel_index)) +
+  geom_bar(stat="identity", aes(fill = fill_col)) + 
+  scale_fill_identity() +
+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+        panel.grid.major.x = element_blank())  +
+  labs(caption = "indeed.com job postings in april 2025, relative to prepandemic",
+       y = "Relative Job Index",
+       x = "Metro Area")
+  
+
+metro_plot
+```
+
+Unfortunately, DC and NYC are currently two of the three biggest losers among the major metro areas in the US. So, is Alex right about the tough job market? Yes, absolutely (and, really, I shouldn't be surprised, he's usually right).
+
+But I want to delve deeper. Alex is in a tough spot at the moment, but how are his longer-term prospects? He's a smart person with a good degree, so it is hard to believe that he will be unable to find gainful employment in the years to come. In the next section, we will look at the factors contributing to the employment of recent college graduates.
+
+## Who is gainfully employed... and who isn't?
+
+#### Unemployment Has Remained Low, Except During Recessions
+
+```{r}
+Unemployment_rates<-read.csv("Unemployment_rates.csv")
+
+p <- Unemployment_rates %>%
+  ggplot(aes(x=YEAR, 
+             y = value*100, 
+             color = plot_label)) +
+  geom_line(size = 1) +
+  scale_x_continuous(breaks = seq(min(Unemployment_rates$YEAR), 
+                                  max(Unemployment_rates$YEAR), by = 3)) +
+  scale_y_continuous(limits = c(0, NA)) +
+  theme_minimal() + 
+  theme(panel.grid.major.x = element_blank(),  
+        panel.grid.minor.x = element_blank(), 
+        legend.position = "top") +
+  labs(x = "Year",
+       y = "Unemployment Rate (%)",
+       caption = "source: IPUMS census data, all USA") +
+  scale_color_manual(name = "",
+                     values = c("All Workers" = "#E69F00", 
+                               "All College Graduates" = "#56B4E9",
+                               "Recent College Graduates" = "#009E73"))
+
+
+p
+```
+
+Unemployment today doesn't seem like a big problem, outside of recession times the unemployment rate for recent grads is in range of the broader labor market, around 4%. People are able to find jobs, it's the quality of the jobs that is at issue.
+
+Alex, and everyone else entering the real world for the first time, wants a GOOD job, not just any job. If all else failed, he could undoubtedly find work in the service industry (he's very personable!). But ideally he would put that big, college educated brain to work.
+
+The graph below plots *under*employment, which is the rate of employment in fields that are "below" one's educational attainment. Underemployment is defined here as working in an occupation where the median or modal education level of the employees is less than a bachelors degree. (Attewell)
+
+#### Almost half of recent college graduates are underemployed
+
+```{r}
+Underemployment_rates <- read.csv("Underemployment_rates.csv")
+p <- Underemployment_rates %>%
+  ggplot(aes(x=YEAR, 
+             y = strict_underemployment_measure * 100, 
+             color = recent_grad)) +
+  geom_line(size = 1) +
+  scale_x_continuous(breaks = seq(min(Underemployment_rates$YEAR), 
+                                  max(Underemployment_rates$YEAR), by = 3)) +
+  scale_y_continuous(limits = c(0, NA),
+                     breaks = c(0,10,20,30,40,50)) +
+  theme_minimal() +
+  theme(panel.grid.major.x = element_blank(),  
+        panel.grid.minor.x = element_blank(),
+        legend.position = "top") +
+  labs(x = "Year",
+       y = "Underemployment Rate (%)",
+       caption = "source: IPUMS census data, all USA") +
+  scale_color_manual(name = "",
+                     values = c("FALSE" = "#E69F00", 
+                               "TRUE" = "#56B4E9"),
+                     labels = c("FALSE" = "All College Graduates", 
+                                "TRUE" = "Recent College Graduates"))
+
+p
+```
+
+That is a lot of degrees not being put to use. Perhaps it's an oversupply issue, i.e. there are too many degree holders and not enough demand. Scholarship on this idea is mixed, with some analyses finding there may actually be an *under*-supply of graduates relative to demand (Attewell). Others claim that the quality of higher education is to blame, that "colleges grant baccalaureates to many students who lack basic numeracy and literacy skills and who therefore cannot perform demanding tasks in the workplace" (Attewell).
+
+Whatever the cause, it is notable that underemployment rates seem to be decreasing over time. The trend is not smooth, but it is persistent.
+
+However, underemployment varies between groups. As with most of society, race is a factor. Stratifying recent graduate underemployment by ethnic category, we see what one might expect: being part of a marginalized group is a risk factor for being underemployed.
+
+Below are odds ratios (OR) generated using a logistic regression that controls for state of residence, degree field, and survey year. You can read them as, for example, "being ethnically Native puts you at 1.4 times the risk of being underemployed compared to a White person". The error bars show you the confidence interval for this odds ratio; if the bars overlap a ratio of 1 (the thick grey bar), then the OR for that group is not significantly different from the comparison group.
+
+#### Black, Multiracial, and Native college graduates are more likely to be underemployed than Whites, even after adjusting for geography and degree field
+
+```{r}
+results <- read.csv("results.csv")
+plt <- ggplot(results, aes(x = estimate, y = term, 
+                    xmin = conf.low, xmax = conf.high)) +
+  
+  scale_y_discrete(expand = expansion(add = c(0, 1.7))) + 
+  
+ 
+  geom_point(color = "blue", size = 2) +
+  geom_errorbarh(height = .2, color = "blue") +  
+  
+ 
+  scale_x_continuous(
+    limits = c(.84, 1.5),
+    breaks = c(.85, 1, 1.15, 1.3, 1.45),
+    labels = c(".85x as likely", "Just as likely", "1.15x as likely", "1.3x as likely", "1.45x as likely")
+  ) +
+  
+  
+  
+  theme_minimal() +
+  theme(
+    axis.line.x = element_blank(),
+    panel.grid.major.y = element_blank(), 
+    panel.grid.major.x = element_blank(),   
+    panel.grid.minor.x = element_blank(),  
+    axis.text = element_text(color = "grey30", size = 10),  
+    axis.ticks.y = element_line(color = "gray"),  
+    axis.title.x = element_text(color = "gray"),  
+    axis.title.y = element_blank(),  
+    plot.margin = margin(t = 1, r = 20, b = 20, l = 20),
+    aspect.ratio = .5,
+    plot.title = element_text(size = 20, hjust = .5)
+  ) +
+  
+  labs(
+    x = "Likelihood of being underemployed compared to White ethnicity",
+  ) +
+  
+
+  annotate("text", x = 1, y = length(unique(results$term)) + 1, 
+           label = "Comparison group: \nWhite", 
+           size = 3.5,
+           hjust = .5) +
+ 
+
+
+  
+  # limit the vertical line height 
+  geom_segment(
+    x = .85, xend = .85,        
+    y = 0.5, yend = length(unique(results$term)) + 0.5,  
+    linetype = "solid", color = "gray", linewidth = .2
+  ) +
+  geom_segment(
+    x = 1, xend = 1,        
+    y = 0.5, yend = length(unique(results$term)) + 0.5,  
+    linetype = "solid", color = "gray", linewidth = 1.2
+  ) +
+  geom_segment(
+    x = 1.15, xend = 1.15,        
+    y = 0.5, yend = length(unique(results$term)) + 0.5, 
+    linetype = "solid", color = "gray", linewidth = .2
+  )  +
+  geom_segment(
+    x = 1.3, xend = 1.3,        
+    y = 0.5, yend = length(unique(results$term)) + 0.5,  
+    linetype = "solid", color = "gray", linewidth = .2
+  ) +
+  geom_segment(
+    x = 1.45, xend = 1.45,        
+    y = 0.5, yend = length(unique(results$term)) + 0.5, 
+    linetype = "solid", color = "gray", linewidth = .2
+  ) +
+  
+  annotate("text", x = 1.15, y = length(unique(results$term)) + 1, 
+           label = "Increased risk of \nunderemployment", 
+           size = 3.5,
+           hjust = 0, 
+           color = "grey30") + 
+
+  # Adding an arrow as annotation
+  geom_segment(
+    x = 1.15, y = length(unique(results$term)) + .55,          
+    xend = 1.45,        
+    arrow = arrow(length = unit(0.2, "cm"), type = "closed"),  
+    color = "grey30"
+  ) 
+
+plt
+```
+
+## Employment and Income
+
+It is also evident that people with certain degrees are more likely to be underemployed or underpaid than others. If you're curious about those differences or about your own prospects, use the applet below to explore different degree fields and majors.
+
+```{r}
+library(shiny)
+library(colorblindr)
+library(plotly)
+library(tidyverse)
+library(maps)
+states <- map_data("state")
+
+ui <- fluidPage(
+  fluidRow(
+    column(12,
+           wellPanel(
+             fluidRow(
+               column(4,
+                      
+                      selectInput(inputId = "deg_cat",
+                                  label = "Degree Category",
+                                  choices = c("Natural Resources", 
+                                              "Arts and Humanities", 
+                                              "Math and Science",
+                                              "Engineering and Tech",
+                                              "Architecture",
+                                              "Social Sciences",
+                                              "Business and Law",
+                                              "interdisciplinary")
+                                  
+                                  
+                      )
+               ),
+               
+               column(4,
+                      
+                      selectInput("major", "Pick A Major, Map Their Income", choices = NULL)
+               )
+               
+             )
+           )
+    )
+  ),
+  fluidRow(
+    column(6,
+           plotlyOutput("plot")
+    ),
+    column(6,
+           plotOutput("map"))
+  )
+)
+
+server <- function(input, output, session) {
+  by_DEGFIELDD <- read.csv("by_DEGFIELDD_labelled.csv")
+  to_plot <- reactive({
+   
+      by_DEGFIELDD %>%
+        filter(degree_cat == input$deg_cat) #filters to selected category
+    
+  })
+  
+  to_dotplot <- reactive({
+    by_DEGFIELDD %>%
+    filter(degree_cat == input$deg_cat) %>%
+    group_by(DEGFIELDD_label) %>%
+    summarise(income = mean(median_income),
+              underemployment = mean(strict_underemployment_measure))
+  })
+  
+  output$plot <- renderPlotly({
+    
+    
+    
+    # Then create the plot with the summarized data
+    p <- to_dotplot() %>%
+      ggplot(aes(x = income, y = underemployment,
+                       text = paste(
+                         "Major: ", DEGFIELDD_label,  
+                         "<br>Underemployment Rate: ", round(underemployment, digits = 3),
+                         "<br>Median Income: $", round(income, 0)
+                       ))) +
+      geom_point(color = "#009E73") +
+      labs(x = "Median Income ($)",
+           title = paste0("Income and Employment for Majors in\n", input$deg_cat)) +
+      scale_x_continuous(limits = c(20000, 115000),
+                         breaks = c(20000, 40000, 60000, 80000, 100000),
+                         labels = c("20k", "40k", "60k", "80k", "100k")) +
+      scale_y_continuous(
+        name = "Underemployment Rate"
+      ) +
+      theme_minimal() + 
+      theme(plot.title = element_text(size = 12, hjust = .5))
+    
+    ggplotly(p, tooltip = "text")
+
+    
+  })
+  
+  
+  observe({
+    
+    major_choices <- to_plot() %>%
+      select(DEGFIELDD_label) %>%
+      distinct() %>%
+      pull()
+    
+    updateSelectInput(session, "major",
+                      choices = major_choices,
+                      selected = NULL)
+  })
+  
+  
+  output$map <- renderPlot({
+    req(input$major)
+    choro_data <- to_plot() %>%
+      filter(DEGFIELDD_label == input$major)
+    
+    choro <- left_join(choro_data, states, by = join_by(region == region))
+    
+    ggplot(choro, aes(long, lat, group = group, 
+                      fill = median_income)) +
+      geom_polygon() +
+      coord_quickmap() +
+      labs(fill = "Median\nIncome ($)",
+           title = paste0(input$major, " Majors' Median Income")) +
+      theme_minimal() +
+      theme(legend.position = "inside",
+            legend.position.inside = c(.90, .2),
+            plot.title = element_text(size = 15, hjust = .5),
+            axis.line.x = element_blank(),
+            panel.grid.major.y = element_blank(), 
+            panel.grid.major.x = element_blank(),   
+            panel.grid.minor.x = element_blank(),
+            panel.grid.minor.y = element_blank(),
+            axis.text = element_blank(),
+            axis.title = element_blank())
+    
+    
+  })
+  
+}
+shinyApp(ui = ui, server = server)
+```
+
+Let's look at how Alex and people like him fare on average in the market. His primary degree is Math with a double major in History. He is white and male, and a native English speaker. At first glance, Alex's traits seem like they would put him at an advantage in the job market. The following animation looks at how people with similar characteristics stack up in terms of employment and income. This paints a rough expected value outlook for alex.
+
+[**The Frames:**]{.underline}
+
+\- **engl_white**: Here are the [English-speaking white folks]{style="color:red;"}, the majority group. (English Speaking, White)
+
+\- **quants**: These are our stereotypical quant nerds, [the dudes studying math]{style="color:red;"}. (English Speaking, White, Male, Math Majors)
+
+\- **alex_like**: These are the people most [similar to Alex]{style="color:red;"} -- recent graduates with double majors and no Masters or PHD. If Alex is anything like these folks, it seems like he'll probably find a decent job. (English Speaking, White, Male, Math Majors, Double Majors, No PHD/Masters, Recent College Graduates)
+
+```{r}
+alex_subsets<-read.csv("alex_subsets.csv")
+p1 <- alex_subsets %>%
+  filter(n>5) %>%
+  ggplot(aes(x = med_income, 
+             y = strict_underemployment_measure, 
+             color = is_red,
+             text = paste(
+            "<br>Underemployment Ratio: ", round(strict_underemployment_measure, digits = 3),
+            "<br>Median Income: $", med_income, ##account for change in currency value
+            "<br>Degree Field:", lbl,  
+            "<br>Masters/PHD: ", graduate_degree,
+            "<br>Recent College Graduate: ", recent_grad,
+            "<br>Ethnicity: ", racial_cat,
+            "<br>Sex: ", ifelse(SEX == 1, "Male", "Female"),
+            "<br>N: ", n
+            
+          )
+          )) +
+  geom_jitter(aes(frame = fct_relevel(frame, "engl_white", "quants", "alex_like"))) +
+  scale_x_continuous(name = "Median Income ($)",
+                     limits = c(0, 180000),
+                     breaks = c(0, 30000, 60000, 90000, 120000, 150000, 180000),
+                     labels = c("0", "30k", "60k", "90k", "120k", "150k", "180k")) +
+  scale_y_continuous(
+    name = "Underemployment Ratio"  # Set the y-axis title
+  ) +
+  theme_minimal() +
+  scale_color_manual(
+    values = c("grey", "red")) +
+  theme(legend.position = "none")
+
+ggplotly(p1, tooltip = "text") %>%
+  animation_opts(
+    1000, easing = "elastic", redraw = FALSE
+  ) %>%
+  animation_slider(
+    currentvalue = NULL
+  )
+```
+
+## Predicting income with Bayesian modelling
+
+Finally, lets look at income predictions. Everyone wants to make money, and factors that we have explored so far like demographics and educational attainment are *somewhat* predictive of future earnings. Emphasis on the somewhat...
+
+The applet below draws the posterior distribution for predicted income based on the characteristics you input. Think of it as a very very fuzzy crystal ball🔮
+
+```{r, warning=FALSE}
+library(tidyverse)
+library(shiny)
+library(brms)
+
+ui <- fluidPage(
+  sidebarLayout(
+    sidebarPanel(width = 5,
+                 fluidPage(
+                   fluidRow(
+                     column(6,
+                            selectizeInput(
+                              'deg_field_input', 
+                              label = "Degree Field", 
+                              choices = NULL,
+                              options = list(placeholder = 'search degree field'),
+                              selected = NULL
+                            )
+                     ),
+                     column(6,
+                            actionButton(inputId = "button",
+                                         label = "Generate data")
+                     )
+                   ),
+                   fluidRow(
+                     column(6,
+                            radioButtons(inputId = "sex",
+                                         label = "Sex",
+                                         choices = c("Male", "Female"))
+                     ),
+                     column(6, 
+                            radioButtons(inputId = "recent_grad",
+                                         label = "Recent Graduate",
+                                         choices = c("True", "False"))
+                     )
+                   ),
+                   fluidRow(
+                     column(6, 
+                            radioButtons(inputId = "lang",
+                                         label = "English First Language",
+                                         choices = c("True", "False"))
+                     ),
+                     column(6,
+                            radioButtons(inputId = "graduate_degree",
+                                         label = "Has Graduate Degree",
+                                         choices = c("True", "False"))
+                     )
+                   ),
+                   fluidRow(
+                     column(6, 
+                            selectInput(inputId = "race",
+                                        label = "Racial Category",
+                                        choices = c("Black", "Multiracial", "Native", 
+                                                    "White", "Asian or Pacific Islander",
+                                                    "Other"))
+                     ),
+                     column(6, 
+                            numericInput("age",
+                                         "Age", 
+                                         value = 40.7))
+                   )
+                 )
+    ),
+    mainPanel(width = 7,
+      plotOutput("plot")
+
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  Labelled_DEGFIELD <- read.csv("Labelled DEGFIELD.csv")
+  choices <- Labelled_DEGFIELD$lbl
+  income_model <- readRDS("bayesreal.RDS")
+  
+  
+  observe({
+    updateSelectizeInput(session, 'deg_field_input', 
+                         choices = choices, 
+                         server = TRUE,
+                         selected = character(0))
+  })
+  
+  user_params <- eventReactive(input$button, {
+    df <- data.frame(SEX = ifelse(input$sex == "Male", 1, 2),
+                    LANGUAGE = ifelse(input$lang == "True", T, F),
+                    recent_grad = ifelse(input$recent_grad == "True", T, F),
+                    graduate_degree = ifelse(input$graduate_degree == "True", T, F), 
+                    racial_cat = input$race,
+                    age_centered = input$age - 40.798,
+                    DEGFIELD = Labelled_DEGFIELD %>% 
+                      filter(lbl == input$deg_field_input) %>%
+                      pull(val)  
+                    
+    )
+    
+    
+  })
+  
+  
+  
+  predictions_data <- reactive({
+  req(input$button)
+  #predictions <- predict(income_model, newdata = user_params(), interval = "prediction", level = 0.80)
+  pred_samples <- posterior_predict(income_model, newdata = user_params())
+  wage_preds <- pred_samples[,1]
+  ci_90 <- quantile(wage_preds, probs = c(0.2, 0.8))
+  
+  list(wage_preds = wage_preds,
+       ci_90 = ci_90)
+  })
+  
+    
+  output$plot <- renderPlot({
+    req(predictions_data())
+    
+    pdata <- predictions_data()
+    ci_90 <- pdata$ci_90
+    wage_preds <- pdata$wage_preds
+    
+    dens <- density(wage_preds)
+
+# Convert to data frame for plotting and exact matching
+  dens_df <- data.frame(x = dens$x, y = dens$y)
+
+# Find the density y-value closest to the median x-value
+  q_x <- quantile(wage_preds, .001)
+  q_y <- approx(dens$x, dens$y, xout = q_x)$y
+    
+    
+
+    
+    ggplot(data.frame(wage = wage_preds), aes(x = wage)) +
+    geom_density(fill = "steelblue", alpha = 0.5) +
+  geom_vline(xintercept = ci_90, linetype = "dashed", color = "red") +
+  annotate("text", x = ci_90[1], y = 0, label = paste0("15% \n$", round(ci_90[1])), hjust = 1.1, vjust = -1.8, color = "red") +
+  annotate("text", x = ci_90[2], y = 0, label = paste0("85% \n$", round(ci_90[2])), hjust = -0.1, vjust = -1.8, color = "red") +
+  labs(title = "Posterior Predictive Distribution of Wage",
+       subtitle = "With 70% Predictive Interval",
+       x = "Predicted Wage ($)", y = "Probability Density") +
+  scale_x_continuous(
+                         limits = c(0, 310000),
+                         breaks = c(seq(0, 3e5, 3e4)),
+                         labels = c("0", "30k", "60k", "90k", "120k", "150k", "180k", "210k", "240k", "270k", "300k"))  +
+  geom_point(aes(x = median(wage_preds), y = 0), color = "black", size = 3) +
+annotate("text", x = median(wage_preds), y = 0, label = paste0("Median: $", round(median(wage_preds))), vjust = -1) +
+  theme_minimal() +
+      theme(axis.text.y = element_blank()) 
+    
+  
+  
+  }
+  )
+  
+
+  
+  
+  
+}
+
+shinyApp(ui = ui, server = server)
+
+
+```
+
+## So will Alex find a job?
+
+The prospects for Alex in the medium-term, that is beyond just this year, are good. People with his education and background have fairly low probability of being underemployed. Though the job market is a bit shaky at the moment, it shows long term consistency, so he should be confident that it will return to normal. What's more, underemployment appears to be trending downward, and knowledge work is expected to grow over the next decade (Nguyen). And finally, on a personal level, I know that employers will find his wealth of smarts and creativity very attractive.
+
+**References**:
+
+Attewell, Paul, and Dirk Witteveen. "Occupational Marginalization, Underemployment, and Earnings Inequality among College Graduates." *Research in Social Stratification and Mobility*, vol. 83, Feb. 2023, p. 100761. *ScienceDirect*, <https://doi.org/10.1016/j.rssm.2023.100761>.
+
+Nguyen, An, et al. "New BLS Employment Projections: 3 Charts." *DOL Blog*, <http://blog.dol.gov/2024/09/06/new-bls-employment-projections-3-charts>. Accessed 19 Apr. 2025.
+
+Data from:
+
+Ruggles, Steven, et al. *IPUMS USA: Version 16.0*. 16.0, Minneapolis, MN: IPUMS, 2025. *DOI.org (Datacite)*, <https://doi.org/10.18128/D010.V16.0>.
+
+*Hiring-Lab/Job_postings_tracker*. 2020. Hiring Lab, 16 Apr. 2025. *GitHub*, <https://github.com/hiring-lab/job_postings_tracker>.
