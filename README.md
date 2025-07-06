@@ -20,3 +20,5 @@ Interactive Data Visualizations
 Bayesian Income Prediction
 
 Animation
+
+[View the app code](ShinyMarkdown.RMD)
